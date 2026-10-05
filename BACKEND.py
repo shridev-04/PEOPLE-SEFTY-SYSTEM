@@ -1,48 +1,70 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 import requests
-import os
 import json
+import logging
+import traceback
+
+# =========================================================
+# LOGGING
+# =========================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s"
+)
+
+logger = logging.getLogger("women-safety")
+
+# =========================================================
+# FASTAPI
+# =========================================================
 
 app = FastAPI(
     title="Women Safety SOS WSS Backend"
 )
 
 # =========================================================
-# CONFIGURATION
+# TELEGRAM CONFIG
 # =========================================================
 
-# Render Environment Variable से Telegram Bot Token पढ़ेगा
-TELEGRAM_BOT_TOKEN = os.getenv(
-    "8830694274:AAFPQGz5-BWPPDTVQWUA3PBNMN8wQ7p9vgI",
-    ""
-)
+# यहां अपना नया BotFather token डालो
+# पुराने exposed token का इस्तेमाल मत करना।
+TELEGRAM_BOT_TOKEN = "8830694274:AAFPQGz5-BWPPDTVQWUA3PBNMN8wQ7p9vgI"
 
-# आपका Telegram Chat ID
 TELEGRAM_CHAT_ID = "6168018748"
 
 
 # =========================================================
-# HOME / HEALTH CHECK
+# HOME
 # =========================================================
 
 @app.get("/")
-def home():
+async def home():
+
     return {
         "status": "online",
-        "message": "Women Safety SOS WSS Backend is running"
+        "message": "Women Safety SOS WSS Backend is running",
+        "websocket": "/ws",
+        "telegram_configured": (
+            TELEGRAM_BOT_TOKEN !=
+            "PASTE_NEW_BOTFATHER_TOKEN_HERE"
+        )
     }
 
 
 # =========================================================
-# TELEGRAM MESSAGE
+# TELEGRAM SEND
 # =========================================================
 
 def send_telegram(data):
 
-    # Token मौजूद है या नहीं
-    if not TELEGRAM_BOT_TOKEN:
+    if (
+        not TELEGRAM_BOT_TOKEN
+        or TELEGRAM_BOT_TOKEN ==
+        "PASTE_NEW_BOTFATHER_TOKEN_HERE"
+    ):
         raise RuntimeError(
-            "TELEGRAM_BOT_TOKEN is missing in Render Environment Variables"
+            "Telegram Bot Token is not configured in BACKEND.py"
         )
 
     device_id = data.get(
@@ -50,24 +72,30 @@ def send_telegram(data):
         "UNKNOWN"
     )
 
-    gps_valid = data.get(
-        "gps_valid",
-        False
+    gps_valid = bool(
+        data.get(
+            "gps_valid",
+            False
+        )
     )
 
-    latitude = data.get(
-        "latitude",
-        0.0
+    latitude = float(
+        data.get(
+            "latitude",
+            0.0
+        )
     )
 
-    longitude = data.get(
-        "longitude",
-        0.0
+    longitude = float(
+        data.get(
+            "longitude",
+            0.0
+        )
     )
 
-    # -----------------------------------------------------
+    # =====================================================
     # GPS AVAILABLE
-    # -----------------------------------------------------
+    # =====================================================
 
     if gps_valid:
 
@@ -87,9 +115,9 @@ def send_telegram(data):
             f"{map_link}"
         )
 
-    # -----------------------------------------------------
+    # =====================================================
     # GPS NOT AVAILABLE
-    # -----------------------------------------------------
+    # =====================================================
 
     else:
 
@@ -104,57 +132,105 @@ def send_telegram(data):
             "Please check the person's safety immediately."
         )
 
-    # -----------------------------------------------------
-    # TELEGRAM API URL
-    # -----------------------------------------------------
+    # =====================================================
+    # TELEGRAM API
+    # =====================================================
 
     url = (
         "https://api.telegram.org/"
         f"bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     )
 
-    # -----------------------------------------------------
-    # SEND MESSAGE
-    # -----------------------------------------------------
+    logger.info("Sending SOS to Telegram...")
 
-    response = requests.post(
-        url,
-        data={
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": message
-        },
-        timeout=15
-    )
+    try:
 
-    # -----------------------------------------------------
-    # ERROR DEBUGGING
-    # -----------------------------------------------------
-
-    if response.status_code != 200:
-
-        print(
-            "❌ TELEGRAM STATUS:",
-            response.status_code
+        response = requests.post(
+            url,
+            data={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": message
+            },
+            timeout=20
         )
 
-        print(
-            "❌ TELEGRAM RESPONSE:",
-            response.text
+    except Exception as error:
+
+        logger.error(
+            "Telegram connection error: %s",
+            str(error)
         )
 
         raise RuntimeError(
-            f"Telegram API error: "
+            f"Telegram connection error: {error}"
+        )
+
+    # =====================================================
+    # TELEGRAM RESPONSE
+    # =====================================================
+
+    logger.info(
+        "Telegram HTTP status: %s",
+        response.status_code
+    )
+
+    logger.info(
+        "Telegram response: %s",
+        response.text
+    )
+
+    if response.status_code != 200:
+
+        raise RuntimeError(
+            "Telegram API error: "
             f"{response.status_code} "
             f"{response.text}"
         )
-
-    print("✅ Telegram API response:", response.text)
 
     return True
 
 
 # =========================================================
-# WSS WEBSOCKET
+# TEST TELEGRAM
+# =========================================================
+
+@app.get("/telegram-test")
+async def telegram_test():
+
+    logger.info("Telegram test started")
+
+    test_data = {
+        "device_id": "TEST_DEVICE",
+        "gps_valid": False,
+        "latitude": 0.0,
+        "longitude": 0.0
+    }
+
+    try:
+
+        send_telegram(test_data)
+
+        return {
+            "success": True,
+            "message": "Telegram test message sent"
+        }
+
+    except Exception as error:
+
+        logger.error(
+            "Telegram test failed: %s",
+            str(error)
+        )
+
+        return {
+            "success": False,
+            "message": "Telegram failed",
+            "error": str(error)
+        }
+
+
+# =========================================================
+# WSS
 # =========================================================
 
 @app.websocket("/ws")
@@ -164,31 +240,36 @@ async def websocket_endpoint(
 
     await websocket.accept()
 
-    print()
-    print("================================")
-    print("✅ WSS CLIENT CONNECTED")
-    print("================================")
+    logger.info(
+        "================================"
+    )
+
+    logger.info(
+        "WSS CLIENT CONNECTED"
+    )
+
+    logger.info(
+        "================================"
+    )
 
     try:
 
         while True:
 
-            # ------------------------------------------------
-            # RECEIVE MESSAGE FROM ESP32
-            # ------------------------------------------------
+            # ---------------------------------------------
+            # RECEIVE ESP32 MESSAGE
+            # ---------------------------------------------
 
             message = await websocket.receive_text()
 
-            print()
-            print("================================")
-            print("📥 MESSAGE RECEIVED")
-            print("================================")
+            logger.info(
+                "MESSAGE RECEIVED: %s",
+                message
+            )
 
-            print(message)
-
-            # ------------------------------------------------
-            # JSON PARSE
-            # ------------------------------------------------
+            # ---------------------------------------------
+            # JSON
+            # ---------------------------------------------
 
             try:
 
@@ -196,7 +277,9 @@ async def websocket_endpoint(
 
             except json.JSONDecodeError:
 
-                print("❌ Invalid JSON received")
+                logger.error(
+                    "Invalid JSON received"
+                )
 
                 await websocket.send_json({
                     "success": False,
@@ -205,72 +288,46 @@ async def websocket_endpoint(
 
                 continue
 
-            # ------------------------------------------------
-            # CHECK SOS EVENT
-            # ------------------------------------------------
+            # ---------------------------------------------
+            # SOS
+            # ---------------------------------------------
 
             if data.get("event") == "SOS":
 
-                print()
-                print("================================")
-                print("🚨 SOS RECEIVED")
-                print("================================")
+                logger.info(
+                    "================================"
+                )
 
-                print(
-                    "Device:",
+                logger.info(
+                    "🚨 SOS RECEIVED"
+                )
+
+                logger.info(
+                    "Device: %s",
                     data.get(
                         "device_id",
                         "UNKNOWN"
                     )
                 )
 
-                print(
-                    "GPS Valid:",
+                logger.info(
+                    "GPS Valid: %s",
                     data.get(
                         "gps_valid",
                         False
                     )
                 )
 
-                # --------------------------------------------
-                # GPS INFORMATION
-                # --------------------------------------------
-
-                if data.get("gps_valid"):
-
-                    print(
-                        "Latitude:",
-                        data.get("latitude")
-                    )
-
-                    print(
-                        "Longitude:",
-                        data.get("longitude")
-                    )
-
-                else:
-
-                    print(
-                        "GPS: NO FIX"
-                    )
-
-                # --------------------------------------------
+                # -----------------------------------------
                 # SEND TELEGRAM
-                # --------------------------------------------
+                # -----------------------------------------
 
                 try:
 
                     send_telegram(data)
 
-                    print()
-                    print(
-                        "================================"
-                    )
-                    print(
+                    logger.info(
                         "✅ TELEGRAM MESSAGE SENT"
-                    )
-                    print(
-                        "================================"
                     )
 
                     await websocket.send_json({
@@ -280,31 +337,22 @@ async def websocket_endpoint(
 
                 except Exception as error:
 
-                    print()
-                    print(
-                        "================================"
-                    )
-                    print(
-                        "❌ TELEGRAM ERROR"
-                    )
-                    print(
-                        "================================"
+                    logger.error(
+                        "❌ TELEGRAM FAILED: %s",
+                        str(error)
                     )
 
-                    print(
-                        str(error)
+                    logger.error(
+                        traceback.format_exc()
                     )
 
                     await websocket.send_json({
                         "success": False,
-                        "message": "Telegram failed"
+                        "message": "Telegram failed",
+                        "error": str(error)
                     })
 
             else:
-
-                # ------------------------------------------------
-                # NORMAL MESSAGE
-                # ------------------------------------------------
 
                 await websocket.send_json({
                     "success": True,
@@ -313,15 +361,17 @@ async def websocket_endpoint(
 
     except WebSocketDisconnect:
 
-        print()
-        print(
-            "⚠️ WSS CLIENT DISCONNECTED"
+        logger.info(
+            "WSS CLIENT DISCONNECTED"
         )
 
     except Exception as error:
 
-        print()
-        print(
-            "❌ WebSocket error:",
+        logger.error(
+            "WebSocket error: %s",
             str(error)
+        )
+
+        logger.error(
+            traceback.format_exc()
         )
