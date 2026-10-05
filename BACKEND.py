@@ -1,137 +1,114 @@
-from fastapi import FastAPI, Header, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 import requests
 import os
-
-
-# ==================================================
-# APP
-# ==================================================
+import json
 
 app = FastAPI(
-    title="Women Safety SOS Backend"
+    title="Women Safety SOS WSS Backend"
 )
 
+# ===============================
+# CONFIG
+# ===============================
 
-# ==================================================
-# SETTINGS
-# ==================================================
-
-# ESP32 में भी यही API key है
-ESP32_API_KEY = "SHRIDEV"
-
-# Telegram Bot Token Render Environment Variable से आएगा
 TELEGRAM_BOT_TOKEN = os.getenv(
     "8830694274:AAFPQGz5-BWPPDTVQWUA3PBNMN8wQ7p9vgI",
     ""
 )
 
-# तुम्हारा Telegram Chat ID
 TELEGRAM_CHAT_ID = "6168018748"
 
 
-# ==================================================
-# GPS DATA
-# ==================================================
-
-class GPSData(BaseModel):
-
-    device_id: str
-
-    # True  = GPS fix available
-    # False = GPS fix unavailable
-    gps_valid: bool = False
-
-    latitude: float = Field(
-        default=0.0,
-        ge=-90,
-        le=90
-    )
-
-    longitude: float = Field(
-        default=0.0,
-        ge=-180,
-        le=180
-    )
-
-
-# ==================================================
+# ===============================
 # HOME
-# ==================================================
+# ===============================
 
 @app.get("/")
 def home():
-
     return {
         "status": "online",
-        "message": "Women Safety SOS Backend is running"
+        "message": "Women Safety SOS WSS Backend is running"
     }
 
 
-# ==================================================
+# ===============================
 # TELEGRAM
-# ==================================================
+# ===============================
 
-def send_telegram(gps: GPSData):
+def send_telegram(data):
 
     if not TELEGRAM_BOT_TOKEN:
-
         raise RuntimeError(
             "TELEGRAM_BOT_TOKEN is missing"
         )
 
+    device_id = data.get(
+        "device_id",
+        "UNKNOWN"
+    )
 
-    # ==================================================
+    gps_valid = data.get(
+        "gps_valid",
+        False
+    )
+
+    latitude = data.get(
+        "latitude",
+        0.0
+    )
+
+    longitude = data.get(
+        "longitude",
+        0.0
+    )
+
+    # ---------------------------
     # GPS AVAILABLE
-    # ==================================================
+    # ---------------------------
 
-    if gps.gps_valid:
+    if gps_valid:
 
         map_link = (
             "https://www.google.com/maps/search/"
-            f"?api=1&query="
-            f"{gps.latitude},{gps.longitude}"
+            f"?api=1&query={latitude},{longitude}"
         )
 
         message = (
             "🚨 WOMEN SAFETY SOS 🚨\n\n"
-            f"Device: {gps.device_id}\n"
+            f"Device: {device_id}\n"
             "Status: EMERGENCY\n\n"
             "📍 GPS LOCATION AVAILABLE\n\n"
-            f"Latitude: {gps.latitude:.6f}\n"
-            f"Longitude: {gps.longitude:.6f}\n\n"
+            f"Latitude: {latitude:.6f}\n"
+            f"Longitude: {longitude:.6f}\n\n"
             "🗺️ Google Maps:\n"
             f"{map_link}"
         )
 
-
-    # ==================================================
+    # ---------------------------
     # GPS NOT AVAILABLE
-    # ==================================================
+    # ---------------------------
 
     else:
 
         message = (
             "🚨 WOMEN SAFETY SOS 🚨\n\n"
-            f"Device: {gps.device_id}\n"
+            f"Device: {device_id}\n"
             "Status: EMERGENCY\n\n"
             "⚠️ GPS LOCATION NOT AVAILABLE\n\n"
-            "The SOS button was triggered, but "
+            "SOS button was triggered, but "
             "the GPS module does not currently "
             "have a valid GPS fix.\n\n"
             "Please check the person's safety immediately."
         )
 
-
-    # ==================================================
-    # TELEGRAM API
-    # ==================================================
+    # ---------------------------
+    # Telegram API
+    # ---------------------------
 
     url = (
         "https://api.telegram.org/"
         f"bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     )
-
 
     response = requests.post(
         url,
@@ -142,104 +119,159 @@ def send_telegram(gps: GPSData):
         timeout=15
     )
 
-
     if response.status_code != 200:
 
         raise RuntimeError(
             f"Telegram API error: {response.text}"
         )
 
-
     return True
 
 
-# ==================================================
-# ESP32 GPS / SOS ENDPOINT
-# ==================================================
+# ===============================
+# WSS WEBSOCKET
+# ===============================
 
-@app.post("/gps")
-def receive_gps(
-    gps: GPSData,
-    x_api_key: str = Header(default="")
+@app.websocket("/ws")
+async def websocket_endpoint(
+    websocket: WebSocket
 ):
 
-    # ==================================================
-    # API KEY CHECK
-    # ==================================================
-
-    if x_api_key != ESP32_API_KEY:
-
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid API key"
-        )
-
-
-    # ==================================================
-    # SERVER LOG
-    # ==================================================
+    await websocket.accept()
 
     print()
     print("================================")
-    print("🚨 SOS RECEIVED")
+    print("WSS CLIENT CONNECTED")
     print("================================")
-
-    print(
-        f"Device    : {gps.device_id}"
-    )
-
-    print(
-        f"GPS Valid : {gps.gps_valid}"
-    )
-
-
-    if gps.gps_valid:
-
-        print(
-            f"Latitude  : {gps.latitude}"
-        )
-
-        print(
-            f"Longitude : {gps.longitude}"
-        )
-
-    else:
-
-        print(
-            "GPS       : NO FIX"
-        )
-
-    print("================================")
-
-
-    # ==================================================
-    # SEND TELEGRAM
-    # ==================================================
 
     try:
 
-        send_telegram(gps)
+        while True:
 
+            # Receive message from ESP32
+            message = await websocket.receive_text()
+
+            print()
+            print("================================")
+            print("MESSAGE RECEIVED")
+            print("================================")
+
+            print(message)
+
+            try:
+
+                data = json.loads(message)
+
+            except json.JSONDecodeError:
+
+                print(
+                    "❌ Invalid JSON received"
+                )
+
+                await websocket.send_json({
+                    "success": False,
+                    "message": "Invalid JSON"
+                })
+
+                continue
+
+
+            # ===============================
+            # CHECK SOS
+            # ===============================
+
+            if data.get("event") == "SOS":
+
+                print()
+                print("🚨 SOS RECEIVED")
+                print(
+                    "Device:",
+                    data.get(
+                        "device_id",
+                        "UNKNOWN"
+                    )
+                )
+
+                print(
+                    "GPS Valid:",
+                    data.get(
+                        "gps_valid",
+                        False
+                    )
+                )
+
+                if data.get("gps_valid"):
+
+                    print(
+                        "Latitude:",
+                        data.get(
+                            "latitude"
+                        )
+                    )
+
+                    print(
+                        "Longitude:",
+                        data.get(
+                            "longitude"
+                        )
+                    )
+
+                else:
+
+                    print(
+                        "GPS: NO FIX"
+                    )
+
+
+                # ===============================
+                # SEND TELEGRAM
+                # ===============================
+
+                try:
+
+                    send_telegram(data)
+
+                    print(
+                        "✅ Telegram message sent"
+                    )
+
+                    await websocket.send_json({
+                        "success": True,
+                        "message": "SOS sent to Telegram"
+                    })
+
+                except Exception as error:
+
+                    print(
+                        "❌ Telegram error:",
+                        error
+                    )
+
+                    await websocket.send_json({
+                        "success": False,
+                        "message": "Telegram failed"
+                    })
+
+
+            else:
+
+                # Normal response
+                await websocket.send_json({
+                    "success": True,
+                    "message": "Message received"
+                })
+
+
+    except WebSocketDisconnect:
+
+        print()
         print(
-            "✅ Telegram message sent"
+            "WSS CLIENT DISCONNECTED"
         )
-
-
-        return {
-            "success": True,
-            "message": "SOS sent to Telegram",
-            "gps_valid": gps.gps_valid
-        }
-
 
     except Exception as error:
 
         print(
-            "❌ Telegram error:",
+            "❌ WebSocket error:",
             error
-        )
-
-        raise HTTPException(
-            status_code=500,
-            detail="Telegram message failed"
         )
